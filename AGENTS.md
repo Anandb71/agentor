@@ -183,7 +183,7 @@ that CLI and skip when it is absent.
 ```python
 from agentor import Agentor
 
-agent = Agentor(name="My Agent", model="gpt-5-nano")
+agent = Agentor(name="My Agent", model="gpt-6-luna")
 agent.serve(port=8000)  # Serves with A2A protocol enabled
 ```
 
@@ -284,7 +284,7 @@ from agentor import Agentor
 
 agent = Agentor(
     name="My Agent",
-    model="gpt-5-nano",
+    model="gpt-6-luna",
     tools=[my_tool],
     instructions="Agent behavior instructions",
 )

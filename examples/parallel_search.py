@@ -10,6 +10,9 @@ import uuid
 from agentor import Agentor, __version__
 from agentor.mcp import MCPServer
 
+# Also told to the agent below: Parallel's tools take the exact model name.
+MODEL = "gpt-6-luna"
+
 
 def create_server() -> MCPServer:
     """Create an anonymous Parallel connection with namespaced tools."""
@@ -58,12 +61,12 @@ async def main() -> None:
     session_id = str(uuid.uuid4())
     agent = Agentor(
         name="Web researcher",
-        model="gpt-5-nano",
+        model=MODEL,
         instructions=(
             "Use parallel_web_search to research the question and cite source URLs. "
             "Use parallel_web_fetch only if the search excerpts are insufficient. "
             f"Use session_id={session_id} for every search and fetch call. "
-            "The configured model_name is gpt-5-nano."
+            f"The configured model_name is {MODEL}."
         ),
         tools=[create_server()],
     )

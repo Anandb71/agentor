@@ -92,3 +92,24 @@ async def test_tools_only_reuses_session_and_closes_on_tool_error(
     with pytest.raises(RuntimeError, match="Rate limit reached"):
         await parallel_search.search_without_model("agent durable runs")
     assert closed == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_agent_mode_reports_the_model_it_runs_on(monkeypatch):
+    """Parallel's tools take the exact model name, so it must match `model=`."""
+    captured = {}
+
+    class SpyAgentor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def arun(self, query):
+            return SimpleNamespace(final_output="done")
+
+    monkeypatch.setattr(parallel_search, "Agentor", SpyAgentor)
+    monkeypatch.setattr("sys.argv", ["parallel_search.py", "durable runs"])
+    await parallel_search.main()
+
+    hint = f"The configured model_name is {captured['model']}."
+    assert captured["model"] == parallel_search.MODEL
+    assert hint in captured["instructions"]

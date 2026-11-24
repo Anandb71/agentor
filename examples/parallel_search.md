@@ -26,10 +26,10 @@ set `OPENAI_API_KEY` in your environment and run:
 uv run python examples/parallel_search.py "What does Agentor support for durable runs?"
 ```
 
-This mode selects `gpt-5-nano`, Agentor's current default; model inference is billed by
-your model provider separately. Agentor opens and closes the MCP connection for
-each run. The tools-only mode manages the connection with an async context
-manager and prints the search/fetch excerpts directly.
+This mode uses `gpt-6-luna`; model inference is billed by your model provider
+separately. Agentor opens and closes the MCP connection for each run. The
+tools-only mode manages the connection with an async context manager and prints
+the search/fetch excerpts directly.
 
 The example sends no authorization header and does not read Parallel credentials.
 Anonymous access is intended for exploration and light use, with server-managed
