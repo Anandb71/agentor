@@ -118,7 +118,7 @@ class Agentor:
         self,
         name: str,
         instructions: Optional[str] = None,
-        model: Any = "gpt-5.6-luna",
+        model: Any = "gpt-6-luna",
         tools: Optional[List[Any]] = None,
         output_type: Any = None,
         debug: bool = False,
@@ -300,7 +300,7 @@ class Agentor:
             ---
             name: Agent name
             tools: ["get_weather", "gmail"]  # or as a string: "get_weather, gmail"
-            model: gpt-4o
+            model: gpt-6-luna
             temperature: 0.3
             ---
             System prompt goes here
@@ -381,7 +381,7 @@ class Agentor:
                 resolved_model_settings = ModelSettings(**settings_dict)
 
         metadata_model = metadata.get("model")
-        resolved_model = model or metadata_model or "gpt-5.6-luna"
+        resolved_model = model or metadata_model or "gpt-6-luna"
 
         return cls(
             name=name,

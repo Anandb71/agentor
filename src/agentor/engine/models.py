@@ -14,6 +14,12 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, runtime_c
 
 from agentor.engine.events import Usage
 
+#: Models whose Chat Completions requests get the effort handling described in
+#: `ChatCompletionsModel._request`. Only Agentor's default is listed, since every
+#: unconfigured agent runs on it; any other model is sent exactly what the caller
+#: set.
+_NONE_EFFORT_MODELS = frozenset({"gpt-6-luna"})
+
 
 @dataclass
 class ToolCall:
@@ -116,6 +122,19 @@ class ChatCompletionsModel:
         tools: Optional[List[Dict]],
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Build the chat-completions payload for one request.
+
+        Caller settings pass through untouched, except on `gpt-6-luna`, the
+        default model. OpenAI accepts function calling there through Chat
+        Completions only at `reasoning_effort="none"`, and the model has no
+        `minimal` level. So an unset or legacy `minimal` effort is sent as
+        `none` (which also keeps `temperature` and `top_p` valid), and tools
+        combined with any other effort fail here, naming the fix, instead of
+        as an HTTP 400.
+
+        The effort is resolved on the payload and never written back to
+        `self.params`, so a fallback model inherits only what the caller set.
+        """
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -125,8 +144,7 @@ class ChatCompletionsModel:
             payload["tools"] = tools
         if response_format:
             payload["response_format"] = response_format
-        if self.model in {"gpt-5.6-luna", "gpt-6-luna"}:
-            # Resolve defaults per request so fallbacks only inherit caller settings.
+        if self.model in _NONE_EFFORT_MODELS:
             if payload.get("reasoning_effort") in (None, "minimal"):
                 payload["reasoning_effort"] = "none"
             if payload.get("tools") and payload["reasoning_effort"] != "none":

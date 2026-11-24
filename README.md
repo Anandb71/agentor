@@ -90,18 +90,23 @@ print(result)
 agent.serve()
 ```
 
-### Any OpenAI-compatible provider
+### Default model
 
-Agentor uses Chat Completions. For `gpt-5.6-luna` and `gpt-6-luna`, an unset
-reasoning effort or the legacy `minimal` setting becomes `none`. Explicit
-reasoning efforts are preserved for requests without tools. With tools (including
-MCP tools), set `ModelSettings(reasoning_effort="none")`; other efforts raise a
-local error before the request is sent. For reasoning with tools, choose a model
-that supports that combination through Chat Completions or pass a custom
-`Model` adapter using the [Responses API](https://developers.openai.com/api/docs/guides/reasoning).
-`gpt-6-astra` requires Responses for tools and does not support effort `none`.
-Fallbacks carry caller-supplied settings, so choose compatible fallback models;
-the automatic Luna effort is resolved separately for each request.
+Agentor defaults to `gpt-6-luna`, OpenAI's most efficient model for high-volume
+tasks. Agentor calls it through Chat Completions, where OpenAI accepts function
+calling for this model only with `reasoning_effort="none"`, and where the model
+has no `minimal` level. So an unset or legacy `minimal` effort is sent as `none`,
+which also keeps `temperature` and `top_p` valid. Other efforts are sent as you
+set them, but with tools (MCP tools included) any effort except `none` raises a
+`ValueError` before the request is sent. To reason with tools, pick a model that
+supports it on Chat Completions, or pass a custom `Model` that calls the
+[Responses API](https://developers.openai.com/api/docs/guides/reasoning).
+
+Fallback models inherit only the settings you set, so choose ones that accept
+them. For example, `gpt-6-astra` rejects effort `none` and needs Responses for
+tools.
+
+### Any OpenAI-compatible provider
 
 Point `base_url` at any provider that speaks OpenAI's `/chat/completions` — OpenRouter,
 Groq, Together, Fireworks, DeepSeek, vLLM, Ollama, or Anthropic's and Gemini's compatible
@@ -221,7 +226,7 @@ Bootstrap an Agent directly from a markdown file with metadata for name, tools, 
 ---
 name: WeatherBot
 tools: [get_weather]
-model: gpt-4o-mini
+model: gpt-6-luna
 temperature: 0.3
 ---
 You are a concise weather assistant.

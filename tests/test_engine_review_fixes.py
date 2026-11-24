@@ -5,6 +5,7 @@ one fails with an explanation rather than a bare assertion.
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -686,15 +687,20 @@ def test_agentor_surfaces_the_unrunnable_tool_message():
 
 
 def test_default_model_uses_supported_replacement():
-    """The default must stay available and support Chat Completions tools."""
+    """OpenAI retires gpt-5-nano (Dec 11, 2026) and gpt-4o-mini (Jan 14, 2027).
+
+    Its deprecations page lists gpt-6-luna for both, and the default has to keep
+    working through Chat Completions with tools.
+    """
     import inspect
 
     from agentor import Agentor
 
     assert inspect.signature(Agentor.__init__).parameters["model"].default == (
-        "gpt-5.6-luna"
+        "gpt-6-luna"
     )
     agent = Agentor(name="T", api_key="test")
+    assert agent._loop.model.model == "gpt-6-luna"
     assert agent._loop.model._request([], None)["reasoning_effort"] == "none"
 
 
@@ -704,29 +710,74 @@ def test_from_md_default_matches_the_constructor_default(tmp_path):
     md = tmp_path / "a.md"
     md.write_text("---\nname: Bot\n---\nYou are helpful.")
     agent = Agentor.from_md(md, api_key="test")
-    assert agent._loop.model.model == "gpt-5.6-luna"
+    assert agent._loop.model.model == "gpt-6-luna"
     assert agent._loop.model._request([], None)["reasoning_effort"] == "none"
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna"])
-def test_luna_migrates_legacy_minimal_effort(model):
+@pytest.mark.parametrize("model", [None, ""])
+def test_an_empty_model_falls_back_to_the_constructor_default(model):
+    """The empty-model fallback and the constructor default once named two models."""
+    from agentor import Agentor
+
+    agent = Agentor(name="T", model=model, api_key="test")
+    assert agent._loop.model.model == "gpt-6-luna"
+
+
+def test_agentloop_default_model_matches_agentor():
+    import inspect
+
+    from agentor import Agentor
+
+    assert inspect.signature(AgentLoop.__init__).parameters["model"].default == (
+        inspect.signature(Agentor.__init__).parameters["model"].default
+    )
+
+
+def test_luna_migrates_legacy_minimal_effort():
     """Legacy settings must still produce a supported tool request."""
     from agentor import Agentor, ModelSettings
 
     settings = ModelSettings(reasoning_effort="minimal")
-    agent = Agentor(name="T", model=model, api_key="test", model_settings=settings)
+    agent = Agentor(name="T", api_key="test", model_settings=settings)
     payload = agent._loop.model._request([], [Tool.from_function(weather).to_openai()])
 
     assert payload["reasoning_effort"] == "none"
     assert settings.reasoning_effort == "minimal"
 
 
+def test_luna_default_keeps_sampling_settings_valid(tmp_path):
+    """temperature and top_p are only accepted at effort none, the default here.
+
+    This is the path of the markdown frontmatter `temperature` shown in the README.
+    """
+    from agentor import Agentor, ModelSettings
+
+    md = tmp_path / "a.md"
+    md.write_text("---\nname: Bot\ntemperature: 0.3\n---\nYou are helpful.")
+    agent = Agentor.from_md(md, api_key="test", model_settings=ModelSettings(top_p=0.9))
+    payload = agent._loop.model._request([], [Tool.from_function(weather).to_openai()])
+
+    assert payload["temperature"] == 0.3
+    assert payload["top_p"] == 0.9
+    assert payload["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize("effort", [None, "none"])
+def test_luna_accepts_tools_at_effort_none(effort):
+    from agentor.engine.models import ChatCompletionsModel
+
+    params = {} if effort is None else {"reasoning_effort": effort}
+    adapter = ChatCompletionsModel("gpt-6-luna", api_key="test", **params)
+    tools = [Tool.from_function(weather).to_openai()]
+
+    payload = adapter._request([], tools)
+    assert payload["tools"] == tools
+    assert payload["reasoning_effort"] == "none"
+
+
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-luna"])
 @pytest.mark.asyncio
-async def test_luna_rejects_reasoning_with_tools_before_calling_provider(
-    model, streaming
-):
+async def test_luna_rejects_reasoning_with_tools_before_calling_provider(streaming):
     """Give both execution paths an actionable error for unsupported tools."""
     from unittest.mock import AsyncMock, MagicMock
 
@@ -734,7 +785,9 @@ async def test_luna_rejects_reasoning_with_tools_before_calling_provider(
 
     client = MagicMock()
     client.chat.completions.create = AsyncMock()
-    adapter = ChatCompletionsModel(model, client=client, reasoning_effort="medium")
+    adapter = ChatCompletionsModel(
+        "gpt-6-luna", client=client, reasoning_effort="medium"
+    )
     assert adapter._request([], None)["reasoning_effort"] == "medium"
 
     with pytest.raises(ValueError, match='reasoning_effort="none"'):
@@ -748,32 +801,119 @@ async def test_luna_rejects_reasoning_with_tools_before_calling_provider(
     client.chat.completions.create.assert_not_called()
 
 
-def test_legacy_minimal_is_preserved_for_other_models():
-    """Models that support minimal must keep the caller's setting."""
+class _RecordingClient:
+    """Stands in for AsyncOpenAI and records what chat.completions.create gets."""
+
+    def __init__(self, content="ok"):
+        self.content = content
+        self.requests = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    async def _create(self, **kwargs):
+        self.requests.append(kwargs)
+        if kwargs.get("stream"):
+            return self._events()
+        message = SimpleNamespace(content=self.content, tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+    async def _events(self):
+        delta = SimpleNamespace(content=self.content, tool_calls=None)
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.asyncio
+async def test_luna_default_request_as_the_sdk_receives_it(streaming):
+    """The default model sends tools at effort none and nothing OpenAI rejects."""
+    from agentor import Agentor
+
+    client = _RecordingClient()
+    model = Agentor(name="T", api_key="test")._loop.model
+    model.client = client
+    tools = [Tool.from_function(weather).to_openai()]
+    messages = [{"role": "user", "content": "hi"}]
+
+    if streaming:
+        chunks = [chunk async for chunk in model.stream(messages, tools)]
+        assert chunks[-1].final.content == "ok"
+    else:
+        assert (await model.complete(messages, tools)).content == "ok"
+
+    (request,) = client.requests
+    assert request["model"] == "gpt-6-luna"
+    assert request["tools"] == tools
+    assert request["reasoning_effort"] == "none"
+    assert "max_tokens" not in request
+    assert request.get("stream", False) is streaming
+    if streaming:
+        assert request["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_luna_default_sends_tools_and_structured_output_together():
+    """The loop's tools and `output_type` both ride on the default model."""
+    from agentor import Agentor
+
+    class Answer(BaseModel):
+        city: str
+
+    client = _RecordingClient(content='{"city": "Paris"}')
+    agent = Agentor(name="T", api_key="test", output_type=Answer, tools=[weather])
+    agent._loop.model.client = client
+
+    result = await agent.arun("Which city?")
+
+    assert result.final_output == Answer(city="Paris")
+    (request,) = client.requests
+    assert request["reasoning_effort"] == "none"
+    assert [t["function"]["name"] for t in request["tools"]] == ["weather"]
+    assert request["response_format"]["type"] == "json_schema"
+    assert request["response_format"]["json_schema"]["name"] == "Answer"
+
+
+@pytest.mark.parametrize(
+    "model", ["gpt-5.6-luna", "gpt-5-mini", "gpt-5-nano", "gpt-6-astra"]
+)
+def test_other_models_are_sent_what_the_caller_set(model):
+    """Only gpt-6-luna has documented constraints handled here, so any other
+    model keeps `minimal` and gets no effort the caller did not choose."""
     from agentor.engine.models import ChatCompletionsModel
 
-    adapter = ChatCompletionsModel(
-        "gpt-5-nano", api_key="test", reasoning_effort="minimal"
-    )
-    assert (
-        adapter._request([], [Tool.from_function(weather).to_openai()])[
-            "reasoning_effort"
-        ]
-        == "minimal"
-    )
+    tools = [Tool.from_function(weather).to_openai()]
+    unset = ChatCompletionsModel(model, api_key="test")._request([], tools)
+    assert "reasoning_effort" not in unset
+
+    for effort in ("minimal", "medium"):
+        adapter = ChatCompletionsModel(model, api_key="test", reasoning_effort=effort)
+        assert adapter._request([], tools)["reasoning_effort"] == effort
 
 
-@pytest.mark.parametrize("effort", [None, "none", "medium"])
+@pytest.mark.parametrize(
+    "primary, fallback, effort, sent",
+    [
+        # luna's automatic effort must not become an explicit setting on astra
+        ("gpt-6-luna", "gpt-6-astra", None, None),
+        ("gpt-6-luna", "gpt-6-astra", "none", "none"),
+        ("gpt-6-luna", "gpt-6-astra", "medium", "medium"),
+        # a legacy `minimal` is resolved for luna alone and stays `minimal` as a
+        # caller setting, so later fallbacks still see what the caller wrote
+        ("gpt-5-mini", "gpt-6-luna", "minimal", "none"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_fallback_only_inherits_the_callers_reasoning_effort(effort):
-    """A Luna request default must not become an explicit Astra setting."""
+async def test_fallback_only_inherits_the_callers_reasoning_effort(
+    primary, fallback, effort, sent
+):
     import httpx
     import openai
 
     from agentor import Agentor, ModelSettings
 
     agent = Agentor(
-        name="T", api_key="test", model_settings=ModelSettings(reasoning_effort=effort)
+        name="T",
+        model=primary,
+        api_key="test",
+        model_settings=ModelSettings(reasoning_effort=effort),
     )
     response = httpx.Response(
         429, request=httpx.Request("POST", "https://api.openai.com/v1/chat")
@@ -788,18 +928,17 @@ async def test_fallback_only_inherits_the_callers_reasoning_effort(effort):
 
     def spy(model, **kwargs):
         clone = original_with_model(model, **kwargs)
-        captured.update(clone.model._request([], None))
+        captured["payload"] = clone.model._request([], None)
+        captured["params"] = dict(clone.model.params)
         clone.model = FakeModel(text("from fallback"))
         return clone
 
     agent._loop.with_model = spy
-    result = await agent.arun("go", fallback_models=["gpt-6-astra"])
+    result = await agent.arun("go", fallback_models=[fallback])
 
     assert result.final_output == "from fallback"
-    if effort is None:
-        assert "reasoning_effort" not in captured
-    else:
-        assert captured["reasoning_effort"] == effort
+    assert captured["payload"].get("reasoning_effort") == sent
+    assert captured["params"].get("reasoning_effort") == effort
 
 
 @pytest.mark.asyncio
