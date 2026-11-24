@@ -21,6 +21,15 @@ from agentor.engine.events import Usage
 _NONE_EFFORT_MODELS = frozenset({"gpt-6-luna"})
 
 
+class UnsupportedSettingsError(ValueError):
+    """The request's settings cannot be sent to this model as configured.
+
+    Still a `ValueError`, so handlers written for that keep working, but a type
+    of its own so that fallback handling can tell it from any other
+    `ValueError`: another model may accept the same settings.
+    """
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -129,8 +138,9 @@ class ChatCompletionsModel:
         Completions only at `reasoning_effort="none"`, and the model has no
         `minimal` level. So an unset or legacy `minimal` effort is sent as
         `none` (which also keeps `temperature` and `top_p` valid), and tools
-        combined with any other effort fail here, naming the fix, instead of
-        as an HTTP 400.
+        combined with any other effort raise `UnsupportedSettingsError` here,
+        naming the fix, instead of failing as an HTTP 400. Fallback models are
+        still tried after it, as they are after a provider error.
 
         The effort is resolved on the payload and never written back to
         `self.params`, so a fallback model inherits only what the caller set.
@@ -148,7 +158,7 @@ class ChatCompletionsModel:
             if payload.get("reasoning_effort") in (None, "minimal"):
                 payload["reasoning_effort"] = "none"
             if payload.get("tools") and payload["reasoning_effort"] != "none":
-                raise ValueError(
+                raise UnsupportedSettingsError(
                     f'{self.model} requires reasoning_effort="none" for tools '
                     "through Chat Completions. Set that effort, choose a compatible "
                     "model, or supply a custom Model using the Responses API "

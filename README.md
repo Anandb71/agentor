@@ -98,8 +98,9 @@ calling for this model only with `reasoning_effort="none"`, and where the model
 has no `minimal` level. So an unset or legacy `minimal` effort is sent as `none`,
 which also keeps `temperature` and `top_p` valid. Other efforts are sent as you
 set them, but with tools (MCP tools included) any effort except `none` raises a
-`ValueError` before the request is sent. To reason with tools, pick a model that
-supports it on Chat Completions, or pass a custom `Model` that calls the
+`ValueError` before the request is sent, and any `fallback_models` are still
+tried. To reason with tools, pick a model that supports it on Chat Completions,
+or pass a custom `Model` that calls the
 [Responses API](https://developers.openai.com/api/docs/guides/reasoning).
 
 Fallback models inherit only the settings you set, so choose ones that accept

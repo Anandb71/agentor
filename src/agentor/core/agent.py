@@ -32,6 +32,7 @@ from agentor.config import celesto_config
 from agentor.engine import AgentLoop, RunResult, function_tool
 from agentor.engine.loop import MessageInput
 from agentor.engine.mcp import MCPServer
+from agentor.engine.models import UnsupportedSettingsError
 from agentor.engine.settings import ModelSettings
 from agentor.engine.tools import resolve_tools
 from agentor.output_text_formatter import AgentOutput, ToolAction
@@ -51,8 +52,16 @@ def _retryable_errors() -> tuple[type[BaseException], ...]:
     error is in hand, never up front: litellm is imported lazily on its first
     request, so a tuple built before that call would omit its errors and the
     very first rate limit would skip the fallbacks entirely.
+
+    `UnsupportedSettingsError` is included because the provider's own rejection
+    of the same request (an `openai.APIError`) is, and a fallback model may
+    accept the settings. Other `ValueError`s are not retried.
     """
-    errors: list[type[BaseException]] = [openai.RateLimitError, openai.APIError]
+    errors: list[type[BaseException]] = [
+        openai.RateLimitError,
+        openai.APIError,
+        UnsupportedSettingsError,
+    ]
     litellm = sys.modules.get("litellm")
     if litellm is not None:
         errors.extend([litellm.RateLimitError, litellm.APIError])

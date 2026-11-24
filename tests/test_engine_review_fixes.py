@@ -941,6 +941,118 @@ async def test_fallback_only_inherits_the_callers_reasoning_effort(
     assert captured["params"].get("reasoning_effort") == effort
 
 
+def _rate_limit_error():
+    import httpx
+    import openai
+
+    response = httpx.Response(
+        429, request=httpx.Request("POST", "https://api.openai.com/v1/chat")
+    )
+    return openai.RateLimitError("rate limited", response=response, body=None)
+
+
+@pytest.mark.asyncio
+async def test_a_local_settings_rejection_still_tries_the_fallback_models():
+    """The provider's own 400 for this request reaches the fallbacks, so the
+    local rejection that replaces it has to as well."""
+    from agentor import Agentor, ModelSettings
+
+    agent = Agentor(
+        name="T",
+        api_key="test",
+        tools=[weather],
+        model_settings=ModelSettings(reasoning_effort="medium"),
+    )
+    original_with_model = agent._loop.with_model
+    tried = []
+
+    def spy(model, **kwargs):
+        clone = original_with_model(model, **kwargs)
+        tried.append(model)
+        clone.model = FakeModel(text("from fallback"))
+        return clone
+
+    agent._loop.with_model = spy
+    result = await agent.arun("go", fallback_models=["gpt-5-mini"])
+
+    assert result.final_output == "from fallback"
+    assert tried == ["gpt-5-mini"]
+
+
+@pytest.mark.asyncio
+async def test_luna_rejecting_settings_mid_chain_does_not_end_the_fallbacks():
+    """A rate-limited primary, a luna fallback that rejects the settings, and a
+    compatible model after it: that last model must still run."""
+    from agentor import Agentor, ModelSettings
+
+    agent = Agentor(
+        name="T",
+        model="gpt-5-mini",
+        api_key="test",
+        tools=[weather],
+        model_settings=ModelSettings(reasoning_effort="medium"),
+    )
+
+    async def boom(*args, **kwargs):
+        raise _rate_limit_error()
+
+    agent._loop.model.complete = boom
+    original_with_model = agent._loop.with_model
+    tried = []
+
+    def spy(model, **kwargs):
+        clone = original_with_model(model, **kwargs)
+        tried.append(model)
+        if model == "gpt-5.4-mini":
+            clone.model = FakeModel(text("from the last fallback"))
+        return clone
+
+    agent._loop.with_model = spy
+    result = await agent.arun("go", fallback_models=["gpt-6-luna", "gpt-5.4-mini"])
+
+    assert result.final_output == "from the last fallback"
+    assert tried == ["gpt-6-luna", "gpt-5.4-mini"]
+
+
+@pytest.mark.asyncio
+async def test_the_caller_sees_the_settings_error_when_no_fallback_recovers():
+    from agentor import Agentor, ModelSettings
+    from agentor.engine.models import UnsupportedSettingsError
+
+    agent = Agentor(
+        name="T",
+        api_key="test",
+        tools=[weather],
+        model_settings=ModelSettings(reasoning_effort="medium"),
+    )
+
+    with pytest.raises(
+        UnsupportedSettingsError, match='reasoning_effort="none"'
+    ) as exc:
+        await agent.arun("go", fallback_models=["gpt-6-luna"])
+    assert isinstance(exc.value, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_other_value_errors_do_not_trigger_the_fallbacks():
+    """Only the settings rejection is recoverable; a bug must still surface."""
+    from agentor import Agentor
+
+    agent = Agentor(name="T", api_key="test")
+
+    async def broken(*args, **kwargs):
+        raise ValueError("bug in the caller")
+
+    def never(model, **kwargs):
+        raise AssertionError("no fallback should be tried")
+
+    agent._loop.model.complete = broken
+    agent._loop.with_model = never
+
+    with pytest.raises(ValueError, match="bug in the caller"):
+        await agent.arun("go", fallback_models=["gpt-5-mini"])
+
+
 @pytest.mark.asyncio
 async def test_fallback_keeps_the_configured_model_parameters():
     """A fallback that drops temperature answers differently to the primary."""
